@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <curl/curl.h>
 #include <json-c/json.h>
 
@@ -14,6 +15,75 @@
 
 typedef struct { char *action, *command, *filename, *content, *answer, *question; } AIAction;
 struct MemoryStruct { char *memory; size_t size; };
+
+static char* normalize_command(const char *command) {
+    if (!command) return NULL;
+
+    size_t len = strlen(command);
+    char *compressed = malloc(len + 1);
+    if (!compressed) return NULL;
+
+    size_t write_idx = 0;
+    int seen_space = 1;
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char c = (unsigned char)command[i];
+        if (isspace(c)) {
+            if (!seen_space) {
+                compressed[write_idx++] = ' ';
+                seen_space = 1;
+            }
+        } else {
+            compressed[write_idx++] = c;
+            seen_space = 0;
+        }
+    }
+    if (write_idx > 0 && compressed[write_idx - 1] == ' ') write_idx--;
+    compressed[write_idx] = '\0';
+
+    char *normalized = malloc(write_idx + 1);
+    if (!normalized) {
+        free(compressed);
+        return NULL;
+    }
+
+    size_t norm_idx = 0;
+    for (size_t i = 0; i < write_idx; ) {
+        if (i + 7 <= write_idx && strncmp(&compressed[i], "apt-get", 7) == 0) {
+            memcpy(&normalized[norm_idx], "apt", 3);
+            norm_idx += 3;
+            i += 7;
+        } else {
+            normalized[norm_idx++] = compressed[i++];
+        }
+    }
+    normalized[norm_idx] = '\0';
+
+    free(compressed);
+    return normalized;
+}
+
+static char* build_write_context(const char *filename, const char *content) {
+    size_t content_len = content ? strlen(content) : 0;
+    const size_t preview_cap = 80;
+    size_t preview_len = content_len < preview_cap ? content_len : preview_cap;
+    char *preview = malloc(preview_len + 1);
+    if (!preview) return NULL;
+
+    for (size_t i = 0; i < preview_len; ++i) {
+        char c = content[i];
+        if (c == '\n' || c == '\r' || c == '\t') preview[i] = ' ';
+        else preview[i] = c;
+    }
+    preview[preview_len] = '\0';
+
+    char *context_message = NULL;
+    if (asprintf(&context_message, "Wrote %zu bytes to %s. Preview: \"%s%s\"", content_len, filename, preview, content_len > preview_len ? "..." : "") == -1) {
+        context_message = NULL;
+    }
+
+    free(preview);
+    return context_message ? context_message : strdup("File written successfully.");
+}
 
 static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;
@@ -149,6 +219,8 @@ int main() {
             const int history_size = 3;
             char *command_history[history_size];
             for(int i=0; i<history_size; i++) command_history[i] = NULL;
+            char *last_written_filename = NULL;
+            char *last_written_content = NULL;
 
             for (int loop_count = 0; loop_count < 15; loop_count++) { // Safety break
                 char full_prompt[16384];
@@ -167,30 +239,46 @@ int main() {
 
                 if (strcmp(action.action, "execute_command") == 0 && action.command) {
                     int is_stuck = 0;
+                    char *normalized_command = normalize_command(action.command);
                     for(int i=0; i<history_size; i++) {
-                        if(command_history[i] && strcmp(command_history[i], action.command) == 0) {
+                        if(command_history[i] && normalized_command && strcmp(command_history[i], normalized_command) == 0) {
                             is_stuck = 1;
                             break;
                         }
                     }
                     if(is_stuck) {
                         printf("🤖 AI is stuck in a loop. Aborting automatic execution.\n");
+                        free(normalized_command);
                         free_ai_action(&action);
                         break;
                     }
                     if(command_history[history_size-1]) free(command_history[history_size-1]);
                     for(int i=history_size-1; i > 0; i--) command_history[i] = command_history[i-1];
-                    command_history[0] = strdup(action.command);
+                    command_history[0] = normalized_command ? normalized_command : strdup(action.command);
                     printf("🤖 Step %d: Running command: \033[1;33m%s\033[0m\n", loop_count + 1, action.command);
                     context = execute_and_capture(action.command);
 
                 } else if (strcmp(action.action, "write_file") == 0 && action.filename && action.content) {
                     printf("🤖 Step %d: Writing to file: \033[1;33m%s\033[0m\n", loop_count + 1, action.filename);
+                    if (last_written_filename && last_written_content &&
+                        strcmp(last_written_filename, action.filename) == 0 &&
+                        strcmp(last_written_content, action.content) == 0) {
+                        printf("🤖 Detected repeated write to %s with identical content. Aborting automatic execution.\n", action.filename);
+                        context = strdup("Repeated identical file write detected. Aborting.");
+                        free_ai_action(&action);
+                        break;
+                    }
+
                     FILE *fp = fopen(action.filename, "w");
                     if (fp) {
                         fprintf(fp, "%s", action.content);
                         fclose(fp);
-                        context = strdup("File written successfully.");
+                        if (last_written_filename) free(last_written_filename);
+                        if (last_written_content) free(last_written_content);
+                        last_written_filename = strdup(action.filename);
+                        last_written_content = strdup(action.content);
+                        context = build_write_context(action.filename, action.content);
+                        if (!context) context = strdup("File written successfully.");
                         printf("✅ %s\n", context);
                     } else {
                         context = strdup("Error opening file for writing.");
@@ -223,6 +311,8 @@ int main() {
             if (context) free(context);
             free(goal);
             for(int i=0; i<history_size; i++) if(command_history[i]) free(command_history[i]);
+            if (last_written_filename) free(last_written_filename);
+            if (last_written_content) free(last_written_content);
         } else {
             system(input);
         }
