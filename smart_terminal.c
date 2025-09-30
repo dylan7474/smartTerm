@@ -221,6 +221,9 @@ int main() {
             for(int i=0; i<history_size; i++) command_history[i] = NULL;
             char *last_written_filename = NULL;
             char *last_written_content = NULL;
+            int command_loop_warning_count = 0;
+            int write_loop_warning_count = 0;
+            const int max_loop_warnings = 2;
 
             for (int loop_count = 0; loop_count < 15; loop_count++) { // Safety break
                 char full_prompt[16384];
@@ -247,10 +250,28 @@ int main() {
                         }
                     }
                     if(is_stuck) {
-                        printf("🤖 AI is stuck in a loop. Aborting automatic execution.\n");
+                        command_loop_warning_count++;
+                        printf("🤖 AI attempted to repeat the command: %s\n", action.command);
+                        if (command_loop_warning_count >= max_loop_warnings) {
+                            printf("🤖 Repeated command limit reached. Aborting automatic execution.\n");
+                            if (context) free(context);
+                            context = strdup("Automatic execution stopped: the same command was requested multiple times without progress.");
+                            free(normalized_command);
+                            free_ai_action(&action);
+                            break;
+                        }
+
+                        if (context) free(context);
+                        if (normalized_command) {
+                            if (asprintf(&context, "Command repetition detected for: %s. Choose a different action or provide the final answer.", normalized_command) == -1) {
+                                context = strdup("Command repetition detected. Choose a different action or provide the final answer.");
+                            }
+                        } else {
+                            context = strdup("Command repetition detected. Choose a different action or provide the final answer.");
+                        }
                         free(normalized_command);
                         free_ai_action(&action);
-                        break;
+                        continue;
                     }
                     if(command_history[history_size-1]) free(command_history[history_size-1]);
                     for(int i=history_size-1; i > 0; i--) command_history[i] = command_history[i-1];
@@ -263,10 +284,22 @@ int main() {
                     if (last_written_filename && last_written_content &&
                         strcmp(last_written_filename, action.filename) == 0 &&
                         strcmp(last_written_content, action.content) == 0) {
-                        printf("🤖 Detected repeated write to %s with identical content. Aborting automatic execution.\n", action.filename);
-                        context = strdup("Repeated identical file write detected. Aborting.");
+                        write_loop_warning_count++;
+                        printf("🤖 Detected repeated write to %s with identical content.\n", action.filename);
+                        if (write_loop_warning_count >= max_loop_warnings) {
+                            printf("🤖 Repeated file write limit reached. Aborting automatic execution.\n");
+                            if (context) free(context);
+                            context = strdup("Automatic execution stopped: repeated identical file writes detected multiple times.");
+                            free_ai_action(&action);
+                            break;
+                        }
+
+                        if (context) free(context);
+                        if (asprintf(&context, "Repeated identical write detected for %s. Choose a different action or finalize the task.", action.filename) == -1) {
+                            context = strdup("Repeated identical file write detected. Choose a different action or finalize the task.");
+                        }
                         free_ai_action(&action);
-                        break;
+                        continue;
                     }
 
                     FILE *fp = fopen(action.filename, "w");
