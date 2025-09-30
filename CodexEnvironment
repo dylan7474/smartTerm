@@ -1,57 +1,6 @@
 #!/usr/bin/env bash
-# CodexEnvironment: helper to establish a consistent build environment for smartTerm.
-#
-# This script exports common toolchain variables and verifies that the essential
-# dependencies are discoverable via pkg-config. Source it from your shell prior
-# to building, or execute it directly to perform the checks.
+set -euxo pipefail
 
-set -euo pipefail
-
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-export CC="${CC:-gcc}"
-export CFLAGS="${CFLAGS:--Wall -Wextra -O2}"
-export LDFLAGS="${LDFLAGS:-}"
-export PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-}" # allow override for custom installations
-
-REQUIRED_PKGS=(libcurl json-c)
-
-check_pkg() {
-  local pkg="$1"
-  if ! pkg-config --exists "$pkg" >/dev/null 2>&1; then
-    echo "Missing pkg-config entry: $pkg" >&2
-    return 1
-  fi
-}
-
-main() {
-  local missing=0
-  for pkg in "${REQUIRED_PKGS[@]}"; do
-    if ! check_pkg "$pkg"; then
-      missing=1
-      echo "  Hint: install development headers for $pkg (e.g., sudo apt install lib${pkg//-/_}-dev)." >&2
-    fi
-  done
-
-  cat <<INFO
-CodexEnvironment configured for smartTerm
-  PROJECT_ROOT : $PROJECT_ROOT
-  CC           : $CC
-  CFLAGS       : $CFLAGS
-  LDFLAGS      : $LDFLAGS
-  PKG_CONFIG_PATH : ${PKG_CONFIG_PATH:-<system default>}
-INFO
-
-  if (( missing )); then
-    echo "\nOne or more dependencies are missing. Please install them before running make." >&2
-    return 1
-  fi
-
-  echo "All required pkg-config entries are available. You can now run 'make'."
-}
-
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  main "$@"
-else
-  main "$@" || return 1
-fi
+apt-get update
+apt-get install -y \
+  build-essential make gcc pkg-config
