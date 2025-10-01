@@ -1,32 +1,43 @@
 # smartTerm
 
-smartTerm is a lightweight terminal client that augments the traditional Linux command line with AI-assisted features. It communicates with web APIs to provide contextual suggestions, summaries, and automation directly in the shell, helping users work faster without leaving their terminal workflows.
+`smart_terminal` is a small C program that lets you collaborate with an Ollama-compatible language model directly from your shell. You describe a goal, the application forwards a structured prompt to the configured model, and then automatically follows the model's suggested actions (running commands, writing files, or asking for clarification) until the model reports that the task is complete.
+
+## Requirements
+
+The project relies on:
+
+- GNU Make and GCC
+- `pkg-config`
+- Development headers for libcurl and json-c
+
+Run `./configure` to verify that the necessary build tools and libraries are present before attempting to compile the client.
 
 ## Building on Linux
-
-The project ships with a standard `Makefile`. To build the executable, ensure the required development packages are installed (see `./configure`). Then run:
 
 ```bash
 ./configure
 make
 ```
 
-This will compile the `smart_terminal` binary. To remove build artifacts, run `make clean`. You can install the binary system-wide with `sudo make install`.
+The resulting `smart_terminal` binary can optionally be installed to `/usr/local/bin` with `sudo make install`. Use `make clean` to remove the compiled executable.
 
-## Basic Controls
+## Configuring the AI backend
 
-Once the application is running:
+Edit `smart_terminal.c` if you need to change either of the following macros:
 
-- **Command Input** – Type commands as you would in a normal terminal session.
-- **AI Suggestions** – Trigger contextual assistance using the program's configured hotkeys or prompt commands.
-- **Session Management** – Exit the application with `Ctrl+C` or `Ctrl+D`.
+- `OLLAMA_URL` – the full endpoint (including `/api/generate`) for your Ollama or compatible server.
+- `OLLAMA_MODEL` – the model identifier to request from the server.
 
-## Roadmap
+Rebuild the program after modifying these values.
 
-- Expand AI integrations with additional providers.
-- Provide configuration options for custom key bindings and prompts.
-- Add unit tests and continuous integration workflows.
-- Package releases for popular Linux distributions.
+## Usage
+
+1. Launch the program with `./smart_terminal`.
+2. When prompted, enter your goal wrapped in double quotes, for example: `"check disk usage"`.
+3. The agent will display each step as it runs commands or writes files on your behalf. Answer any follow-up questions directly in the terminal.
+4. Type `exit` or `quit` at the main prompt to leave the application.
+
+If a command or file write repeats without making progress, the client will automatically stop to protect your system. When this happens you can provide additional guidance or end the session.
 
 ## License
 

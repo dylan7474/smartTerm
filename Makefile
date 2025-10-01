@@ -1,7 +1,13 @@
 # Compiler and flags
 CC = gcc
 CFLAGS = -Wall -g -std=c99
-LDFLAGS = -lcurl -ljson-c
+
+PKG_CONFIG ?= pkg-config
+PKG_CFLAGS := $(shell $(PKG_CONFIG) --cflags libcurl json-c 2>/dev/null)
+PKG_LIBS := $(shell $(PKG_CONFIG) --libs libcurl json-c 2>/dev/null)
+
+CFLAGS += $(PKG_CFLAGS)
+LDLIBS = $(if $(strip $(PKG_LIBS)),$(PKG_LIBS),-lcurl -ljson-c)
 
 # Target executable name
 TARGET = smart_terminal
@@ -17,7 +23,7 @@ all: $(TARGET)
 
 # Rule to link the object file into the final executable
 $(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LDLIBS)
 	@echo "$(TARGET) has been compiled successfully."
 
 # Rule to clean up build files
