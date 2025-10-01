@@ -101,12 +101,19 @@ char* execute_and_capture(const char* command) {
     FILE *fp;
     char buffer[1024];
     char *output = malloc(1);
+    if (!output) {
+        fprintf(stderr, "Error: unable to allocate memory for command output.\n");
+        return NULL;
+    }
     output[0] = '\0';
     size_t output_size = 1;
     char full_command[2048];
     snprintf(full_command, sizeof(full_command), "%s 2>&1", command);
     fp = popen(full_command, "r");
-    if (fp == NULL) { fprintf(stderr, "Failed to run command\n"); return output; }
+    if (fp == NULL) {
+        fprintf(stderr, "Failed to run command\n");
+        return output;
+    }
     printf("--- Output ---\n");
     while (fgets(buffer, sizeof(buffer), fp) != NULL) {
         printf("%s", buffer);
@@ -157,32 +164,70 @@ void parse_ollama_action(const char *json_string, AIAction *ai_action) {
     json_object_put(parsed_json);
 }
 
+static const char *FALLBACK_CONTEXT = "Previous step produced no context (memory allocation failed).";
+
 void get_ai_action(const char* full_prompt, AIAction *ai_action) {
-    CURL *curl;
+    CURL *curl = NULL;
+    struct curl_slist *headers = NULL;
+    json_object *jobj = NULL;
     struct MemoryStruct chunk = { .memory = malloc(1), .size = 0 };
-    curl_global_init(CURL_GLOBAL_ALL);
-    curl = curl_easy_init();
-    if (curl) {
-        json_object *jobj = json_object_new_object();
-        json_object_object_add(jobj, "model", json_object_new_string(OLLAMA_MODEL));
-        json_object_object_add(jobj, "prompt", json_object_new_string(full_prompt));
-        json_object_object_add(jobj, "stream", json_object_new_boolean(0));
-        const char *json_payload = json_object_to_json_string(jobj);
-        struct curl_slist *headers = curl_slist_append(NULL, "Content-Type: application/json");
-        curl_easy_setopt(curl, CURLOPT_URL, OLLAMA_URL);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_payload);
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
-        printf("🧠 Thinking... "); fflush(stdout);
-        CURLcode res = curl_easy_perform(curl);
-        printf("Done.\n");
-        if (res == CURLE_OK) parse_ollama_action(chunk.memory, ai_action);
-        else fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        curl_easy_cleanup(curl);
-        curl_slist_free_all(headers);
-        json_object_put(jobj);
+
+    memset(ai_action, 0, sizeof(*ai_action));
+
+    if (!chunk.memory) {
+        fprintf(stderr, "Error: unable to allocate memory for AI response buffer.\n");
+        return;
     }
+    chunk.memory[0] = '\0';
+
+    if (curl_global_init(CURL_GLOBAL_ALL) != 0) {
+        fprintf(stderr, "Error: failed to initialise libcurl globals.\n");
+        free(chunk.memory);
+        return;
+    }
+
+    curl = curl_easy_init();
+    if (!curl) {
+        fprintf(stderr, "Error: failed to create CURL handle.\n");
+        goto cleanup;
+    }
+
+    jobj = json_object_new_object();
+    if (!jobj) {
+        fprintf(stderr, "Error: failed to allocate JSON request object.\n");
+        goto cleanup;
+    }
+
+    json_object_object_add(jobj, "model", json_object_new_string(OLLAMA_MODEL));
+    json_object_object_add(jobj, "prompt", json_object_new_string(full_prompt));
+    json_object_object_add(jobj, "stream", json_object_new_boolean(0));
+    const char *json_payload = json_object_to_json_string(jobj);
+
+    headers = curl_slist_append(NULL, "Content-Type: application/json");
+    if (!headers) {
+        fprintf(stderr, "Error: failed to allocate HTTP headers for request.\n");
+        goto cleanup;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, OLLAMA_URL);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_payload);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
+
+    printf("🧠 Thinking... "); fflush(stdout);
+    CURLcode res = curl_easy_perform(curl);
+    printf("Done.\n");
+    if (res == CURLE_OK) {
+        parse_ollama_action(chunk.memory, ai_action);
+    } else {
+        fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+    }
+
+cleanup:
+    if (headers) curl_slist_free_all(headers);
+    if (curl) curl_easy_cleanup(curl);
+    if (jobj) json_object_put(jobj);
     curl_global_cleanup();
     free(chunk.memory);
 }
@@ -211,6 +256,10 @@ int main() {
 
         if (input[0] == '"') {
             char *goal = strdup(input + 1);
+            if (!goal) {
+                fprintf(stderr, "Error: unable to allocate memory for goal string.\n");
+                continue;
+            }
             char *last_char = strrchr(goal, '"');
             if (last_char) *last_char = '\0';
 
@@ -224,11 +273,17 @@ int main() {
             int command_loop_warning_count = 0;
             int write_loop_warning_count = 0;
             const int max_loop_warnings = 2;
+            int fallback_context_warned = 0;
 
             for (int loop_count = 0; loop_count < 15; loop_count++) { // Safety break
+                const char *prompt_context = context ? context : FALLBACK_CONTEXT;
+                if (!context && !fallback_context_warned) {
+                    fprintf(stderr, "Warning: using fallback context for AI prompt due to missing previous output.\n");
+                    fallback_context_warned = 1;
+                }
                 char full_prompt[16384];
-                snprintf(full_prompt, sizeof(full_prompt), PROMPT_TEMPLATE, goal, context);
-                
+                snprintf(full_prompt, sizeof(full_prompt), PROMPT_TEMPLATE, goal, prompt_context);
+
                 AIAction action;
                 get_ai_action(full_prompt, &action);
 
@@ -312,7 +367,8 @@ int main() {
                         last_written_content = strdup(action.content);
                         context = build_write_context(action.filename, action.content);
                         if (!context) context = strdup("File written successfully.");
-                        printf("✅ %s\n", context);
+                        if (context) printf("✅ %s\n", context);
+                        else printf("✅ File written successfully.\n");
                     } else {
                         context = strdup("Error opening file for writing.");
                         fprintf(stderr, "Error: %s\n", context);
